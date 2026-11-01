@@ -14,7 +14,7 @@ const ANALYSIS_SCHEMA = {
     audience_signals: { type: "object", properties: { likely_audience: { type: "string" }, topic: { type: "string" }, tone: { type: "string" }, emotions: { type: "array", items: { type: "string" } }, format: { type: "string" } }, required: ["likely_audience", "topic", "tone", "emotions", "format"] },
     quality_review: { type: "object", properties: { strengths: { type: "array", items: { type: "string" } }, improvements: { type: "array", items: { type: "string" } }, policy_flags: { type: "array", items: { type: "string" } } }, required: ["strengths", "improvements", "policy_flags"] },
     youtube_metadata: { type: "array", minItems: 3, maxItems: 3, items: { type: "object", properties: { title: { type: "string" }, description: { type: "string" }, tags: { type: "array", items: { type: "string" } }, hashtags: { type: "array", items: { type: "string" } }, rationale: { type: "string" } }, required: ["title", "description", "tags", "hashtags", "rationale"] } },
-    thumbnail_ideas: { type: "array", items: { type: "object", properties: { concept: { type: "string" }, text: { type: "string" } }, required: ["concept", "text"] }
+    thumbnail_ideas: { type: "array", items: { type: "object", properties: { concept: { type: "string" }, text: { type: "string" } }, required: ["concept", "text"] } }
   },
   required: ["story_summary", "hook", "scenes", "characters_and_objects", "audio_and_transcript", "audience_signals", "quality_review", "youtube_metadata", "thumbnail_ideas"]
 };
