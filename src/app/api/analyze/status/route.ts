@@ -39,13 +39,16 @@ export async function GET(request: Request) {
       const fileState = String(file.state || "").toUpperCase();
       if (fileState === "PROCESSING") return NextResponse.json({ ok: true, status: "processing", stage: "Preparing video and audio", message: "Gemini is processing the uploaded video before starting scene and audio analysis.", providerState: fileState, checkedAt: new Date().toISOString() });
       if (fileState !== "ACTIVE") throw new Error(file.error?.message || "Gemini could not process this video file.");
+      const { data: videoInfo } = await supabase.from("videos").select("file_size_bytes").eq("id", videoId).eq("user_id", user.id).maybeSingle();
+      // Short clips use static sampling; larger uploads use agentic analysis for deeper inspection.
+      const processingMode = Number(videoInfo?.file_size_bytes || 0) > 8 * 1024 * 1024 ? "agentic" : "static";
       const interactionResponse = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
         method: "POST",
         headers: { "x-goog-api-key": apiKey, "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "gemini-3.8-flash", background: true,
+          model: "gemini-3.8-flash", background: true, generation_config: { max_output_tokens: 8192 },
           input: [
-            { type: "video", uri: file.uri, mime_type: file.mimeType || file.mime_type, processing: "agentic" },
+            { type: "video", uri: file.uri, mime_type: file.mimeType || file.mime_type, processing: processingMode },
             { type: "text", text: `You are an expert video editor, story analyst and YouTube growth strategist. Inspect the actual video and its audio. Do not invent events, dialogue, characters, visual details, duration, or claims. If something is unclear, say so. Return ONLY valid JSON with this exact shape:
 {
  "story_summary":"Concise factual summary of what actually happens",
@@ -85,13 +88,26 @@ Provide 3 distinct title options. Keep metadata faithful to the video. Timestamp
     if (!response.ok) throw new Error("Could not retrieve Gemini job status: " + (await response.text()).slice(0, 300));
     const job = await response.json();
     const state = String(job.status || job.state || "in_progress").toLowerCase();
-    if (["failed", "cancelled", "canceled"].includes(state)) {
-      const message = job.error?.message || "Gemini could not complete this video analysis.";
-      await supabase.from("video_analysis").update({ status: "failed", error_message: message, updated_at: new Date().toISOString() }).eq("id", analysis.id);
+    const terminalFailures = ["failed", "cancelled", "canceled", "incomplete", "budget_exceeded", "requires_continuation", "requires_action"];
+    if (terminalFailures.includes(state)) {
+      const stepDetails = Array.isArray(job.steps) ? job.steps.map((step: any) => ({
+        type: step.type,
+        error: step.error?.message || step.error || step.message || null,
+        content: Array.isArray(step.content) ? step.content.filter((part: any) => part.type === "text" && part.text).map((part: any) => String(part.text).slice(0, 500)).join("\\n") : ""
+      })).filter((step: any) => step.error || step.content) : [];
+      const providerError = typeof job.error === "string" ? job.error : job.error?.message || job.error?.details || job.error?.code || "";
+      const message = String(providerError || job.error_message || job.failure_reason || job.message || stepDetails.map((step: any) => step.error || step.content).filter(Boolean).join(" | ") || (
+        state === "budget_exceeded" ? "Gemini stopped because the analysis exceeded its processing budget. Retry with a shorter clip." :
+        state === "incomplete" ? "Gemini returned incomplete output. Retry the analysis." :
+        state === "requires_continuation" ? "Gemini requires another continuation request, which this version cannot complete yet." :
+        state === "requires_action" ? "Gemini requested an action that this video-analysis workflow does not support." :
+        "Gemini ended the job with status: " + state + ". The provider did not include a detailed reason."
+      )).slice(0, 1000);
+      await supabase.from("video_analysis").update({ status: "failed", error_message: message, updated_at: new Date().toISOString() }).eq("id", analysis.id).eq("user_id", user.id);
       await supabase.from("videos").update({ status: "failed", updated_at: new Date().toISOString() }).eq("id", videoId).eq("user_id", user.id);
-      return NextResponse.json({ ok: false, status: "failed", error: message });
+      return NextResponse.json({ ok: false, status: "failed", error: message, providerState: state, canRetry: true });
     }
-    if (state !== "completed" && state !== "succeeded") return NextResponse.json({ ok: true, status: "processing", stage: "Analyzing video and audio", message: "Gemini is still analyzing the actual footage and audio. The job remains active; the next check will update this window.", providerState: state, checkedAt: new Date().toISOString() });
+    if (state !== "completed" && state !== "succeeded") return NextResponse.json({ ok: true, status: "processing", stage: state === "queued" ? "Waiting for Gemini capacity" : "Analyzing video and audio", message: state === "queued" ? "Gemini has queued your analysis. The app will keep checking automatically." : "Gemini is still analyzing the actual footage and audio. The job remains active; the next check will update this window.", providerState: state, checkedAt: new Date().toISOString() });
 
     const raw = job.output_text || job.output?.text || (Array.isArray(job.steps) ? job.steps.flatMap((s: any) => s.content || []).map((c: any) => c.text || "").join("\n") : "");
     const result = extractJson(String(raw));
