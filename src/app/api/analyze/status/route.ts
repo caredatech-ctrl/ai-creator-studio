@@ -132,7 +132,7 @@ Provide 3 distinct title options. Keep metadata faithful to the video. Timestamp
       const providerError = typeof job.error === "string" ? job.error : job.error?.message || job.error?.details || job.error?.code || "";
       const stepErrors = Array.isArray(job.steps) ? job.steps
         .filter((step: any) => step?.error || step?.type === "error")
-        .map((step: any) => typeof step.error === "string" ? step.error : step.error?.message || step.message || "")
+        .map((step: any) => typeof step.error === "string" ? step.error : step.error?.message || "")
         .filter(Boolean).join(" | ") : "";
       let fallbackFailure = "";
       if (["failed", "incomplete", "budget_exceeded"].includes(state) && analysis.provider_file_name) {
@@ -170,7 +170,7 @@ Provide exactly 3 distinct title options. Keep metadata faithful to the video. T
           });
           if (!fallbackResponse.ok) throw new Error("Direct video fallback returned HTTP " + fallbackResponse.status + ": " + (await fallbackResponse.text()).slice(0, 700));
           const fallbackJson = await fallbackResponse.json();
-          fallbackRaw = (fallbackJson.candidates || []).flatMap((candidate: any) => candidate.content?.parts || []).map((part: any) => part.text || "").filter(Boolean).join("\\n");
+          fallbackRaw = (fallbackJson.candidates || []).flatMap((candidate: any) => candidate.content?.parts || []).map((part: any) => part.text || "").filter(Boolean).join("\n");
           if (!fallbackRaw) throw new Error("Direct video fallback completed without a text result. Finish reason: " + String(fallbackJson.candidates?.[0]?.finishReason || "unknown"));
           extractJson(fallbackRaw);
         } catch (fallbackError) {
