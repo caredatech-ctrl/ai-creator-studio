@@ -87,35 +87,11 @@ export async function POST(request: Request) {
     }, { onConflict: "video_id" });
     if (upsertError) throw new Error("Could not create the analysis record: " + upsertError.message);
 
-    const interactionResponse = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
-      method: "POST",
-      headers: { "x-goog-api-key": apiKey, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: MODEL,
-        background: true,
-        input: [
-          { type: "video", uri: file.uri, mime_type: mimeType, processing: "agentic" },
-          { type: "text", text: PROMPT }
-        ]
-      })
-    });
-    if (!interactionResponse.ok) throw new Error("Gemini analysis could not start: " + (await interactionResponse.text()).slice(0, 500));
-    const interaction = await interactionResponse.json();
-    if (!interaction.id) throw new Error("Gemini did not return an analysis job ID.");
-
-    const { error: saveError } = await supabase.from("video_analysis").update({
-      provider_interaction_id: interaction.id, status: "processing", updated_at: new Date().toISOString()
-    }).eq("video_id", video.id).eq("user_id", user.id);
-    if (saveError) throw new Error("Could not save the Gemini job reference: " + saveError.message);
-
     await supabase.from("videos").update({ status: "processing", updated_at: new Date().toISOString() }).eq("id", video.id).eq("user_id", user.id);
-    return NextResponse.json({ ok: true, status: "processing", videoId, message: "Gemini is inspecting the actual video and audio." });
+    return NextResponse.json({ ok: true, status: "processing", videoId, message: "Video uploaded to Gemini. Waiting for video processing to finish." });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Video analysis failed.";
-    await supabase.from("video_analysis").upsert({
-      video_id: video.id, user_id: user.id, status: "failed", error_message: message.slice(0, 1000),
-      model_provider: "Google Gemini 3.8 Flash"
-    }, { onConflict: "video_id" });
+    await supabase.from("video_analysis").upsert({ video_id: video.id, user_id: user.id, status: "failed", error_message: message.slice(0, 1000), model_provider: "Google Gemini 3.8 Flash" }, { onConflict: "video_id" });
     await supabase.from("videos").update({ status: "failed", updated_at: new Date().toISOString() }).eq("id", video.id).eq("user_id", user.id);
     return NextResponse.json({ error: message }, { status: 502 });
   }
