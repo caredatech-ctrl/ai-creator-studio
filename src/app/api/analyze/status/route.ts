@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
-export const maxDuration = 30;
+export const maxDuration = 60;
 
 const ANALYSIS_SCHEMA = {
   type: "object",
@@ -127,27 +127,70 @@ Provide 3 distinct title options. Keep metadata faithful to the video. Timestamp
     const job = await response.json();
     const state = String(job.status || job.state || "in_progress").toLowerCase();
     const terminalFailures = ["failed", "cancelled", "canceled", "incomplete", "budget_exceeded", "requires_continuation", "requires_action"];
+    let fallbackRaw = "";
     if (terminalFailures.includes(state)) {
-      const stepDetails = Array.isArray(job.steps) ? job.steps.map((step: any) => ({
-        type: step.type,
-        error: step.error?.message || step.error || step.message || null,
-        content: Array.isArray(step.content) ? step.content.filter((part: any) => part.type === "text" && part.text).map((part: any) => String(part.text).slice(0, 500)).join("\\n") : ""
-      })).filter((step: any) => step.error || step.content) : [];
       const providerError = typeof job.error === "string" ? job.error : job.error?.message || job.error?.details || job.error?.code || "";
-      const message = String(providerError || job.error_message || job.failure_reason || job.message || stepDetails.map((step: any) => step.error || step.content).filter(Boolean).join(" | ") || (
-        state === "budget_exceeded" ? "Gemini stopped because the analysis exceeded its processing budget. Retry with a shorter clip." :
-        state === "incomplete" ? "Gemini returned incomplete output. Retry the analysis." :
-        state === "requires_continuation" ? "Gemini requires another continuation request, which this version cannot complete yet." :
-        state === "requires_action" ? "Gemini requested an action that this video-analysis workflow does not support." :
-        "Gemini ended the job with status: " + state + ". The provider did not include a detailed reason."
-      )).slice(0, 1000);
-      await supabase.from("video_analysis").update({ status: "failed", error_message: message, updated_at: new Date().toISOString() }).eq("id", analysis.id).eq("user_id", user.id);
-      await supabase.from("videos").update({ status: "failed", updated_at: new Date().toISOString() }).eq("id", videoId).eq("user_id", user.id);
-      return NextResponse.json({ ok: false, status: "failed", error: message, providerState: state, canRetry: true });
+      const stepErrors = Array.isArray(job.steps) ? job.steps
+        .filter((step: any) => step?.error || step?.type === "error")
+        .map((step: any) => typeof step.error === "string" ? step.error : step.error?.message || step.message || "")
+        .filter(Boolean).join(" | ") : "";
+      let fallbackFailure = "";
+      if (["failed", "incomplete", "budget_exceeded"].includes(state) && analysis.provider_file_name) {
+        try {
+          const fileResponse = await fetch("https://generativelanguage.googleapis.com/v1beta/" + analysis.provider_file_name, {
+            headers: { "x-goog-api-key": apiKey }, cache: "no-store"
+          });
+          if (!fileResponse.ok) throw new Error("Could not retrieve the uploaded Gemini video file (HTTP " + fileResponse.status + ").");
+          const file = await fileResponse.json();
+          if (String(file.state || "").toUpperCase() !== "ACTIVE" || !file.uri) throw new Error("The uploaded Gemini file is not ACTIVE and cannot be used for fallback analysis.");
+          const fallbackPrompt = \`You are an expert video editor, story analyst and YouTube growth strategist. Inspect the actual video and its audio. Do not invent events, dialogue, characters, visual details, duration, or claims. If something is unclear, say so. Return ONLY valid JSON with this exact shape:
+{
+ "story_summary":"Concise factual summary of what actually happens",
+ "hook":"What happens in the opening and how compelling it is",
+ "scenes":[{"timestamp":"00:00","description":"Visible scene/action","purpose":"Narrative or editing purpose"}],
+ "characters_and_objects":[{"name":"Only if identifiable from video","description":"Observable traits or role"}],
+ "audio_and_transcript":{"transcript":"Verbatim only when clearly audible; otherwise empty string","audio_summary":"Speech, music, sound effects and audio quality"},
+ "audience_signals":{"likely_audience":"Evidence-based audience","topic":"Main topic","tone":"Tone","emotions":["observed emotions"],"format":"Short/long/educational/story/etc"},
+ "quality_review":{"strengths":["specific observed strengths"],"improvements":["actionable edits"],"policy_flags":["Only concrete potential YouTube policy concerns; otherwise empty"]},
+ "youtube_metadata":[{"title":"Accurate compelling title","description":"Accurate description, no fabricated claims","tags":["relevant tags"],"hashtags":["relevant hashtags"],"rationale":"Why this fits the actual video"}],
+ "thumbnail_ideas":[{"concept":"Visual composition grounded in actual footage","text":"Short overlay text"}]
+}
+Provide exactly 3 distinct title options. Keep metadata faithful to the video. Timestamps must correspond to actual moments. If a scene, speaker, or word cannot be verified from the media, explicitly say so rather than guessing.\`;
+          const fallbackResponse = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent", {
+            method: "POST",
+            headers: { "x-goog-api-key": apiKey, "Content-Type": "application/json" },
+            cache: "no-store",
+            body: JSON.stringify({
+              contents: [{ parts: [
+                { fileData: { mimeType: file.mimeType || file.mime_type || "video/mp4", fileUri: file.uri } },
+                { text: fallbackPrompt }
+              ] }],
+              generationConfig: { responseMimeType: "application/json", responseSchema: ANALYSIS_SCHEMA, maxOutputTokens: 8192 }
+            })
+          });
+          if (!fallbackResponse.ok) throw new Error("Direct video fallback returned HTTP " + fallbackResponse.status + ": " + (await fallbackResponse.text()).slice(0, 700));
+          const fallbackJson = await fallbackResponse.json();
+          fallbackRaw = (fallbackJson.candidates || []).flatMap((candidate: any) => candidate.content?.parts || []).map((part: any) => part.text || "").filter(Boolean).join("\\n");
+          if (!fallbackRaw) throw new Error("Direct video fallback completed without a text result. Finish reason: " + String(fallbackJson.candidates?.[0]?.finishReason || "unknown"));
+          extractJson(fallbackRaw);
+        } catch (fallbackError) {
+          fallbackFailure = fallbackError instanceof Error ? fallbackError.message : "Direct video fallback failed.";
+        }
+      }
+      if (!fallbackRaw) {
+        const safeProviderDetail = String(providerError || stepErrors || fallbackFailure || "").trim();
+        const message = ("Gemini background analysis ended with status " + state + ". " +
+          (safeProviderDetail ? "Provider detail: " + safeProviderDetail : "Gemini did not return a provider error detail.") +
+          (fallbackFailure ? " Direct video fallback: " + fallbackFailure : " No fallback was run for this provider status.") +
+          " The original prompt is not an error message; retry starts a fresh analysis.").slice(0, 1000);
+        await supabase.from("video_analysis").update({ status: "failed", error_message: message, updated_at: new Date().toISOString() }).eq("id", analysis.id).eq("user_id", user.id);
+        await supabase.from("videos").update({ status: "failed", updated_at: new Date().toISOString() }).eq("id", videoId).eq("user_id", user.id);
+        return NextResponse.json({ ok: false, status: "failed", error: message, providerState: state, canRetry: true });
+      }
     }
     if (state !== "completed" && state !== "succeeded") return NextResponse.json({ ok: true, status: "processing", stage: state === "queued" ? "Waiting for Gemini capacity" : "Analyzing video and audio", message: state === "queued" ? "Gemini has queued your analysis. The app will keep checking automatically." : "Gemini is still analyzing the actual footage and audio. The job remains active; the next check will update this window.", providerState: state, checkedAt: new Date().toISOString() });
 
-    const raw = job.output_text || job.output?.text || (Array.isArray(job.outputs) ? job.outputs.map((o: any) => o.text || o.content?.map?.((p: any) => p.text || "").join("") || "").join("\n") : "") || (Array.isArray(job.steps) ? job.steps.flatMap((s: any) => s.content || []).map((part: any) => part.text || "").filter(Boolean).join("\n") : "");
+    const raw = fallbackRaw || job.output_text || job.output?.text || (Array.isArray(job.outputs) ? job.outputs.map((o: any) => o.text || o.content?.map?.((p: any) => p.text || "").join("") || "").join("\n") : "") || (Array.isArray(job.steps) ? job.steps.filter((step: any) => step.type === "model_output").flatMap((s: any) => s.content || []).map((part: any) => part.text || "").filter(Boolean).join("\n") : "");
     const result = extractJson(String(raw));
     const { error: saveAnalysisError } = await supabase.from("video_analysis").update({
       status: "completed", transcript: result.audio_and_transcript?.transcript || "",
