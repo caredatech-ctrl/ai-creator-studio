@@ -143,7 +143,7 @@ Provide 3 distinct title options. Keep metadata faithful to the video. Timestamp
           if (!fileResponse.ok) throw new Error("Could not retrieve the uploaded Gemini video file (HTTP " + fileResponse.status + ").");
           const file = await fileResponse.json();
           if (String(file.state || "").toUpperCase() !== "ACTIVE" || !file.uri) throw new Error("The uploaded Gemini file is not ACTIVE and cannot be used for fallback analysis.");
-          const fallbackPrompt = \`You are an expert video editor, story analyst and YouTube growth strategist. Inspect the actual video and its audio. Do not invent events, dialogue, characters, visual details, duration, or claims. If something is unclear, say so. Return ONLY valid JSON with this exact shape:
+          const fallbackPrompt = `You are an expert video editor, story analyst and YouTube growth strategist. Inspect the actual video and its audio. Do not invent events, dialogue, characters, visual details, duration, or claims. If something is unclear, say so. Return ONLY valid JSON with this exact shape:
 {
  "story_summary":"Concise factual summary of what actually happens",
  "hook":"What happens in the opening and how compelling it is",
@@ -155,7 +155,7 @@ Provide 3 distinct title options. Keep metadata faithful to the video. Timestamp
  "youtube_metadata":[{"title":"Accurate compelling title","description":"Accurate description, no fabricated claims","tags":["relevant tags"],"hashtags":["relevant hashtags"],"rationale":"Why this fits the actual video"}],
  "thumbnail_ideas":[{"concept":"Visual composition grounded in actual footage","text":"Short overlay text"}]
 }
-Provide exactly 3 distinct title options. Keep metadata faithful to the video. Timestamps must correspond to actual moments. If a scene, speaker, or word cannot be verified from the media, explicitly say so rather than guessing.\`;
+Provide exactly 3 distinct title options. Keep metadata faithful to the video. Timestamps must correspond to actual moments. If a scene, speaker, or word cannot be verified from the media, explicitly say so rather than guessing.`;
           const fallbackResponse = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent", {
             method: "POST",
             headers: { "x-goog-api-key": apiKey, "Content-Type": "application/json" },
