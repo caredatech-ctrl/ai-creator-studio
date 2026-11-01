@@ -165,7 +165,7 @@ Provide exactly 3 distinct title options. Keep metadata faithful to the video. T
                 { fileData: { mimeType: file.mimeType || file.mime_type || "video/mp4", fileUri: file.uri } },
                 { text: fallbackPrompt }
               ] }],
-              generationConfig: { responseMimeType: "application/json", responseSchema: ANALYSIS_SCHEMA, maxOutputTokens: 8192 }
+              generationConfig: { responseMimeType: "application/json", responseJsonSchema: ANALYSIS_SCHEMA, maxOutputTokens: 8192 }
             })
           });
           if (!fallbackResponse.ok) throw new Error("Direct video fallback returned HTTP " + fallbackResponse.status + ": " + (await fallbackResponse.text()).slice(0, 700));
