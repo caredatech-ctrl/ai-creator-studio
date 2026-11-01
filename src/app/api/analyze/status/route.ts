@@ -35,8 +35,16 @@ function extractJson(raw: string) {
   let value: any;
   try { value = JSON.parse(cleaned.slice(start, end + 1)); }
   catch { throw new Error("Gemini returned malformed JSON despite structured-output mode. The result was not saved; retry analysis."); }
-  if (!value || typeof value !== "object" || typeof value.story_summary !== "string" || !Array.isArray(value.scenes) || !value.audio_and_transcript || !value.audience_signals || !value.quality_review || !Array.isArray(value.youtube_metadata)) {
-    throw new Error("Gemini output did not match the required video-analysis schema. The result was not saved; retry analysis.");
+  const isStringArray = (items: any) => Array.isArray(items) && items.every((item: any) => typeof item === "string");
+  const validScenes = Array.isArray(value?.scenes) && value.scenes.every((scene: any) => scene && typeof scene.timestamp === "string" && typeof scene.description === "string" && typeof scene.purpose === "string");
+  const validMetadata = Array.isArray(value?.youtube_metadata) && value.youtube_metadata.length === 3 && value.youtube_metadata.every((item: any) => item && typeof item.title === "string" && typeof item.description === "string" && typeof item.rationale === "string" && isStringArray(item.tags) && isStringArray(item.hashtags));
+  const validAudio = value?.audio_and_transcript && typeof value.audio_and_transcript.transcript === "string" && typeof value.audio_and_transcript.audio_summary === "string";
+  const validAudience = value?.audience_signals && typeof value.audience_signals.likely_audience === "string" && typeof value.audience_signals.topic === "string" && typeof value.audience_signals.tone === "string" && typeof value.audience_signals.format === "string" && isStringArray(value.audience_signals.emotions);
+  const validQuality = value?.quality_review && isStringArray(value.quality_review.strengths) && isStringArray(value.quality_review.improvements) && isStringArray(value.quality_review.policy_flags);
+  const validPeople = Array.isArray(value?.characters_and_objects) && value.characters_and_objects.every((item: any) => item && typeof item.name === "string" && typeof item.description === "string");
+  const validThumbnails = Array.isArray(value?.thumbnail_ideas) && value.thumbnail_ideas.every((item: any) => item && typeof item.concept === "string" && typeof item.text === "string");
+  if (!value || typeof value !== "object" || typeof value.story_summary !== "string" || typeof value.hook !== "string" || !validScenes || !validMetadata || !validAudio || !validAudience || !validQuality || !validPeople || !validThumbnails) {
+    throw new Error("Gemini output did not match the complete video-analysis schema. Nothing was saved; retry analysis.");
   }
   return value;
 }
