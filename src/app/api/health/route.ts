@@ -4,8 +4,8 @@ import { createClient } from "@/lib/supabase/server";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-async function timed<T>(task: () => Promise<T>, ms = 8000): Promise<T> {
-  return await Promise.race([task(), new Promise<T>((_, reject) => setTimeout(() => reject(new Error("Health check timed out")), ms))]);
+async function timed<T>(task: () => PromiseLike<T> | T, ms = 8000): Promise<T> {
+  return await Promise.race([Promise.resolve().then(task), new Promise<T>((_, reject) => setTimeout(() => reject(new Error("Health check timed out")), ms))]);
 }
 
 export async function GET() {
