@@ -4,12 +4,41 @@ import { createClient } from "@/lib/supabase/server";
 export const runtime = "nodejs";
 export const maxDuration = 30;
 
+const ANALYSIS_SCHEMA = {
+  type: "object",
+  properties: {
+    story_summary: { type: "string" }, hook: { type: "string" },
+    scenes: { type: "array", items: { type: "object", properties: { timestamp: { type: "string" }, description: { type: "string" }, purpose: { type: "string" } }, required: ["timestamp", "description", "purpose"] } },
+    characters_and_objects: { type: "array", items: { type: "object", properties: { name: { type: "string" }, description: { type: "string" } }, required: ["name", "description"] } },
+    audio_and_transcript: { type: "object", properties: { transcript: { type: "string" }, audio_summary: { type: "string" } }, required: ["transcript", "audio_summary"] },
+    audience_signals: { type: "object", properties: { likely_audience: { type: "string" }, topic: { type: "string" }, tone: { type: "string" }, emotions: { type: "array", items: { type: "string" } }, format: { type: "string" } }, required: ["likely_audience", "topic", "tone", "emotions", "format"] },
+    quality_review: { type: "object", properties: { strengths: { type: "array", items: { type: "string" } }, improvements: { type: "array", items: { type: "string" } }, policy_flags: { type: "array", items: { type: "string" } } }, required: ["strengths", "improvements", "policy_flags"] },
+    youtube_metadata: { type: "array", minItems: 3, maxItems: 3, items: { type: "object", properties: { title: { type: "string" }, description: { type: "string" }, tags: { type: "array", items: { type: "string" } }, hashtags: { type: "array", items: { type: "string" } }, rationale: { type: "string" } }, required: ["title", "description", "tags", "hashtags", "rationale"] } },
+    thumbnail_ideas: { type: "array", items: { type: "object", properties: { concept: { type: "string" }, text: { type: "string" } }, required: ["concept", "text"] }
+  },
+  required: ["story_summary", "hook", "scenes", "characters_and_objects", "audio_and_transcript", "audience_signals", "quality_review", "youtube_metadata", "thumbnail_ideas"]
+};
+
 function extractJson(raw: string) {
-  const cleaned = raw.trim().replace(/^\x60\x60\x60(?:json)?\s*/i, "").replace(/\s*\x60\x60\x60$/, "");
+  const cleaned = raw.trim().replace(/^\x60{3}(?:json)?\s*/i, "").replace(/\s*\x60{3}$/, "");
   const start = cleaned.indexOf("{");
-  const end = cleaned.lastIndexOf("}");
-  if (start < 0 || end <= start) throw new Error("Gemini returned no valid structured analysis.");
-  return JSON.parse(cleaned.slice(start, end + 1));
+  if (start < 0) throw new Error("Gemini completed without returning the required JSON object. Retry analysis; no guessed content was saved.");
+  let depth = 0, quoted = false, escaped = false, end = -1;
+  for (let i = start; i < cleaned.length; i++) {
+    const ch = cleaned[i];
+    if (quoted) { if (escaped) escaped = false; else if (ch === "\\") escaped = true; else if (ch === '"') quoted = false; continue; }
+    if (ch === '"') quoted = true;
+    else if (ch === "{") depth++;
+    else if (ch === "}" && --depth === 0) { end = i; break; }
+  }
+  if (end < 0) throw new Error("Gemini returned incomplete JSON. The result was not saved; retry analysis.");
+  let value: any;
+  try { value = JSON.parse(cleaned.slice(start, end + 1)); }
+  catch { throw new Error("Gemini returned malformed JSON despite structured-output mode. The result was not saved; retry analysis."); }
+  if (!value || typeof value !== "object" || typeof value.story_summary !== "string" || !Array.isArray(value.scenes) || !value.audio_and_transcript || !value.audience_signals || !value.quality_review || !Array.isArray(value.youtube_metadata)) {
+    throw new Error("Gemini output did not match the required video-analysis schema. The result was not saved; retry analysis.");
+  }
+  return value;
 }
 
 export async function GET(request: Request) {
@@ -47,6 +76,7 @@ export async function GET(request: Request) {
         headers: { "x-goog-api-key": apiKey, "Content-Type": "application/json" },
         body: JSON.stringify({
           model: "gemini-3.8-flash", background: true, generation_config: { max_output_tokens: 8192 },
+          response_format: { type: "text", mime_type: "application/json", schema: ANALYSIS_SCHEMA },
           input: [
             { type: "video", uri: file.uri, mime_type: file.mimeType || file.mime_type, processing: processingMode },
             { type: "text", text: `You are an expert video editor, story analyst and YouTube growth strategist. Inspect the actual video and its audio. Do not invent events, dialogue, characters, visual details, duration, or claims. If something is unclear, say so. Return ONLY valid JSON with this exact shape:
@@ -109,7 +139,7 @@ Provide 3 distinct title options. Keep metadata faithful to the video. Timestamp
     }
     if (state !== "completed" && state !== "succeeded") return NextResponse.json({ ok: true, status: "processing", stage: state === "queued" ? "Waiting for Gemini capacity" : "Analyzing video and audio", message: state === "queued" ? "Gemini has queued your analysis. The app will keep checking automatically." : "Gemini is still analyzing the actual footage and audio. The job remains active; the next check will update this window.", providerState: state, checkedAt: new Date().toISOString() });
 
-    const raw = job.output_text || job.output?.text || (Array.isArray(job.steps) ? job.steps.flatMap((s: any) => s.content || []).map((c: any) => c.text || "").join("\n") : "");
+    const raw = job.output_text || job.output?.text || (Array.isArray(job.outputs) ? job.outputs.map((o: any) => o.text || o.content?.map?.((p: any) => p.text || "").join("") || "").join("\n") : "") || (Array.isArray(job.steps) ? job.steps.flatMap((s: any) => s.content || []).map((part: any) => part.text || "").filter(Boolean).join("\n") : "");
     const result = extractJson(String(raw));
     const { error: saveAnalysisError } = await supabase.from("video_analysis").update({
       status: "completed", transcript: result.audio_and_transcript?.transcript || "",
