@@ -37,7 +37,7 @@ export async function GET(request: Request) {
       if (!fileResponse.ok) throw new Error("Could not check Gemini video processing: " + (await fileResponse.text()).slice(0, 300));
       const file = await fileResponse.json();
       const fileState = String(file.state || "").toUpperCase();
-      if (fileState === "PROCESSING") return NextResponse.json({ ok: true, status: "processing", message: "Gemini is preparing the video for analysis." });
+      if (fileState === "PROCESSING") return NextResponse.json({ ok: true, status: "processing", stage: "Preparing video and audio", message: "Gemini is processing the uploaded video before starting scene and audio analysis.", providerState: fileState, checkedAt: new Date().toISOString() });
       if (fileState !== "ACTIVE") throw new Error(file.error?.message || "Gemini could not process this video file.");
       const interactionResponse = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
         method: "POST",
@@ -69,7 +69,7 @@ Provide 3 distinct title options. Keep metadata faithful to the video. Timestamp
         provider_interaction_id: interaction.id, status: "processing", updated_at: new Date().toISOString()
       }).eq("id", analysis.id).eq("user_id", user.id);
       if (updateError) throw new Error("Could not save Gemini analysis job: " + updateError.message);
-      return NextResponse.json({ ok: true, status: "processing", message: "Gemini is now analyzing the actual video and audio." });
+      return NextResponse.json({ ok: true, status: "processing", stage: "Analyzing video and audio", message: "Gemini has accepted the analysis job and is examining the actual footage, scenes, speech and sound.", providerState: String(interaction.status || "in_progress"), checkedAt: new Date().toISOString() });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Could not start Gemini analysis.";
       await supabase.from("video_analysis").update({ status: "failed", error_message: message.slice(0, 1000), updated_at: new Date().toISOString() }).eq("id", analysis.id);
@@ -91,7 +91,7 @@ Provide 3 distinct title options. Keep metadata faithful to the video. Timestamp
       await supabase.from("videos").update({ status: "failed", updated_at: new Date().toISOString() }).eq("id", videoId).eq("user_id", user.id);
       return NextResponse.json({ ok: false, status: "failed", error: message });
     }
-    if (state !== "completed" && state !== "succeeded") return NextResponse.json({ ok: true, status: "processing", message: "Gemini is still analyzing the video." });
+    if (state !== "completed" && state !== "succeeded") return NextResponse.json({ ok: true, status: "processing", stage: "Analyzing video and audio", message: "Gemini is still analyzing the actual footage and audio. The job remains active; the next check will update this window.", providerState: state, checkedAt: new Date().toISOString() });
 
     const raw = job.output_text || job.output?.text || (Array.isArray(job.steps) ? job.steps.flatMap((s: any) => s.content || []).map((c: any) => c.text || "").join("\n") : "");
     const result = extractJson(String(raw));
@@ -117,7 +117,7 @@ Provide 3 distinct title options. Keep metadata faithful to the video. Timestamp
       if (metadataError) throw new Error("Analysis saved but metadata save failed: " + metadataError.message);
     }
     await supabase.from("videos").update({ status: "ready_for_review", updated_at: new Date().toISOString() }).eq("id", videoId).eq("user_id", user.id);
-    return NextResponse.json({ ok: true, status: "completed", analysis: { ...analysis, ...result, status: "completed" }, metadata: options });
+    return NextResponse.json({ ok: true, status: "completed", stage: "Analysis complete", message: "Gemini finished the analysis and the results were saved securely.", checkedAt: new Date().toISOString(), analysis: { ...analysis, ...result, status: "completed" }, metadata: options });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Could not parse Gemini analysis.";
     await supabase.from("video_analysis").update({ status: "failed", error_message: message.slice(0, 1000), updated_at: new Date().toISOString() }).eq("id", analysis.id);
